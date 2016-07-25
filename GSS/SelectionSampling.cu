@@ -20,6 +20,11 @@
 #include <thrust/functional.h>
 #include <thrust/scan.h>
 #include <ctime>
+
+//curand
+#include <curand.h>
+#include <curand_kernel.h>
+
 using namespace std;
 #define GPUCHECK(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort = true)
@@ -59,7 +64,7 @@ __host__ __device__ inline int right(int i)
 template <typename T>
 void viewGPUArray(T* array,  int num, string filename)
 {
-	const string dir = "C:/Users/lunamu/Dropbox/MATLAB/";
+	const string dir = "C:/Users/mu/Dropbox/MATLAB/";
 	T* host_array = new T[num]; 
 	GPUCHECK(cudaMemcpy(host_array, array, sizeof(T) * num, cudaMemcpyDeviceToHost));
 	ofstream file(dir + filename);
@@ -67,12 +72,14 @@ void viewGPUArray(T* array,  int num, string filename)
 	{
 		file << host_array[i] << endl;
 	}
+	file.close();
+	delete[] host_array;
 }
 
 template <typename T>
 void viewGPUArrayMat(T* array, int num, string filename)
 {
-	const string dir = "C:/Users/lunamu/Dropbox/MATLAB/";
+	const string dir = "C:/Users/mu/Dropbox/MATLAB/";
 	T* host_array = new T[num];
 	GPUCHECK(cudaMemcpy(host_array, array, sizeof(T) * num, cudaMemcpyDeviceToHost));
 	ofstream file(dir + filename);
@@ -80,6 +87,8 @@ void viewGPUArrayMat(T* array, int num, string filename)
 	{
 		file << host_array[i].p.x <<" "<<host_array[i].p.y << endl;
 	}
+	file.close();
+	delete[] host_array;
 }
 
 
@@ -118,7 +127,7 @@ public:
 	}
 	friend ostream& operator<<(ostream& os, const Point2D& p)
 	{
-		os << p.w ;
+		os << p.x<<" " <<p.y<<" "<<p.w ;
 		return os;
 	}
 };
@@ -348,11 +357,7 @@ __global__ void dev_MQ_heapify(HashValue* MQ_dev, HashElem* MQ_idx_dev,size_t MQ
 
 void hashingPoints2D(vector<Point2D>& points, vector<HashValue>& hash, size_t size, size_t grid_dimension)
 {
-	//calculate BBox of points
-
-	BBox box;
-	bBox(points, box, size);
-	hash.resize(size);
+	
 	for (int i = 0; i < size; i++)
 	{
 		hash[i].morton = mortonHash2D(points[i], grid_dimension);
@@ -474,39 +479,6 @@ __host__ __device__ float distance2(Point2D p1, Point2D p2)
 	return sqrtf((p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y));
 }
 
-//Original, buggy, host
-//void assignOriginalWeighting(vector<HashValue>& hash_grids, vector<HashElem>& hash_idx, float radius, size_t grid_dim)
-//{
-//	for(int iter = 0; iter < hash_grids.size(); iter++)
-//	{
-//		//there's no need for a template radiusSearch function, just write the logic
-//		//radiusSearch()
-//		Point2D& current_point = hash_grids[iter].p;
-//		int x_axis_start = (int)(((current_point-radius).x / 1.0) * (1<<grid_dim));
-//		int y_axis_start = (int)(((current_point-radius).y / 1.0) * (1<<grid_dim));
-//		int x_axis_end = (int)(((current_point+radius).x / 1.0) * (1<<grid_dim));
-//		int y_axis_end = (int)(((current_point+radius).y / 1.0) * (1<<grid_dim));
-//
-//		for (int x = x_axis_start; x <= x_axis_end; x++)
-//		{
-//			for (int y = y_axis_start; y <= y_axis_end; y++)
-//			{
-//				
-//				int morton = mortonHash2D_axis(x, y , grid_dim);
-//				int offset = hash_idx[morton].idx;
-//				for (int idx = 0; idx < hash_idx[morton].num; idx++)
-//				{
-//					float d = distance2(hash_grids[offset + idx].p, current_point);
-//					//if (d < radius)current_point.w += d;
-//					//test, only use the counting
-//					if (d < radius)current_point.w += 1;
-//				}
-//			}
-//		}
-//
-//
-//	}
-//}
 #define EPS 0.00001
 __global__ void devAssignOriginalWeighting(HashValue* hash_grids, HashElem* hash_idx, float radius, size_t grid_dim, size_t point_num)
 {
@@ -654,7 +626,6 @@ void heapifytest(HashValue* MQ_dev, HashElem* MQ_idx_dev, size_t MQ_size)
 	}
 }
 
-#define BIGF 10000.0;
 __global__ void resetWeighting(HashValue* dev_hash_grids, size_t size)
 {
 	int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -663,61 +634,141 @@ __global__ void resetWeighting(HashValue* dev_hash_grids, size_t size)
 		dev_hash_grids[idx].p.w = 0.0;
 	}
 }
-int main()
+
+__global__ void generateRandomPoint(curandState_t* states, Point2D* points, unsigned int seed, size_t size)
 {
-	//important parameters
-	int grid_dim = 7;
-	int point_num = 1000000;
-	float radius = 0.001;
-
-
-
-	int morton_num = (1 << grid_dim) * (1 << grid_dim);
-	vector<Point2D> points;
-	vector<HashValue> hash_grids;
-	vector<HashElem> hash_idx;  //size is the maximum size of a certain dimension;
-	hash_idx.resize(morton_num);
-	for (int i = 0; i < morton_num; i++){ hash_idx[i].idx = 0; hash_idx[i].num = 0; }//init hash_idx array
-
-	//generate random point cloud 2d;
-	generateRandomPointCloud(points, point_num);
-	////view these points in matlab;
-	//matlabView(points,"results");
-	//make hash_grids from the random points.
-
-	//time test
-#ifdef TEST
-	for (int i = 10000; i <= 500000; i += 10000)
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (idx < size)
 	{
-		generateRandomPointCloud(points, i);
-		int start_s = clock();
-		hashingPoints2D(points, hash_grids, i, grid_dim);
-		//make hash index (used for searching)
-
-		hashIndexing(hash_grids, hash_idx, i);
-		int stop_s = clock();
-
-		cout << i << " " << (stop_s - start_s) / double(CLOCKS_PER_SEC) * 1000.0 << endl;
+		curand_init(seed * idx, blockIdx.x, 0, &states[idx]);
+		points[idx].x =  (curand(&states[idx]) % RAND_MAX) / float(RAND_MAX);
+		points[idx].y =  (curand(&states[idx]) % RAND_MAX) / float(RAND_MAX);
+		points[idx].w = 0.0;
 	}
-#endif
+}
 
+
+__global__ void hashingPoints2Ddev(Point2D* dev_points, HashValue* hash, size_t size, size_t grid_dimension)
+{
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (idx < size)
+	{
+		hash[idx].morton = mortonHash2D(dev_points[idx], grid_dimension);
+		hash[idx].p = dev_points[idx];
+	}
+}
+//
+//__global__ void init_curand(curandState_t* states, unsigned int seed, size_t size)
+//{
+//	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+//	if (idx < size)
+//	{
+//		curand_init(seed, blockIdx.x, 0, &states[idx]);
+//	}
+
+struct marker_struct
+{
+	int marker;
+	int morton;
+};
+__global__ void generateMarkerArray(marker_struct* marker, HashValue* hash_grids, size_t size)
+{
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (idx < size)
+	{
+		if (idx == 0)
+		{
+			marker[idx].marker = 1;
+			marker[idx].morton = hash_grids[idx].morton;
+		}
+		else
+		{
+			if (hash_grids[idx].morton != hash_grids[idx - 1].morton)
+			{
+				marker[idx].marker = 1;
+				marker[idx].morton = hash_grids[idx].morton;
+			}
+			else
+			{
+				marker[idx].marker = 0;
+				marker[idx].morton = 0;
+			}
+		}
+	}
+}
+__global__ void generateCounterArray(marker_struct* marker, HashElem* counter, size_t size)
+{
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (idx < size)
+	{
+		counter[idx].idx = idx;
+		int ct = 1;
+		if (marker[idx].marker == 1)
+		{
+			int cur = idx+1;
+			while ((cur < size) && (marker[cur].marker == 0))
+			{
+				ct++;
+				cur++;
+			}
+			counter[idx].num = ct;
+		}
+		else
+			counter[idx].num = 0;
+	}
+}
+
+__global__ void  hashIndexing(HashValue* hash_grids, HashElem* hash_idx, int* marker, size_t size)
+{
+
+
+}
+
+
+//struct for thrust execution
+struct HashCmp {
+	__host__ __device__
+		bool operator()(const HashValue& o1, const HashValue& o2) {
+		return o1.morton < o2.morton;
+	}
+};
+
+struct marker_not_zero
+{
+	__host__ __device__
+	bool operator()(marker_struct x)
+	{
+		return x.marker != 0;
+	}
+};
+
+
+int main(int argc, char *argv[])
+{
+	cudaFree(0);
+	//important parameters
+	int grid_dim = atoi(argv[1]);										//Grid_dimension, 1<<grid_dim is total number (1D)
+	int point_num = atoi(argv[2]);								//Point Number
+	float radius = 0.5337 / sqrtf(point_num);				//rmax on a 2d surface
+	int morton_num = (1 << grid_dim) * (1 << grid_dim);		//morton num of 2D
+
+	vector<Point2D> points(point_num);									//host points 2D raw
+	vector<HashValue> hash_grids(point_num);							//actual storage of all points
+	vector<HashElem> hash_idx(morton_num);								//index & num of a certain grid, size is morton num.
+	generateRandomPointCloud(points, point_num);
 	hashingPoints2D(points, hash_grids, point_num, grid_dim);
-	//make hash index (used for searching)
-
 	hashIndexing(hash_grids, hash_idx, point_num);
 	
-
 	//Now, all important index are built, move to GPU;
+
+	//copy to GPU
 	HashValue* dev_hash_grids = 0;
 	HashElem* dev_hash_idx = 0;
-	Point2D* dev_points = 0;//only for test.
-	GPUCHECK(cudaMalloc((void**)&dev_hash_grids, point_num * sizeof(HashValue)));
-	GPUCHECK(cudaMalloc((void**)&dev_hash_idx, morton_num * sizeof(HashElem)));
-	GPUCHECK(cudaMalloc((void**)&dev_points, point_num * sizeof(Point2D)));
-	//copy to GPU
+	GPUCHECK(cudaMalloc((void**)&dev_hash_grids, sizeof(HashValue)*point_num));
+	GPUCHECK(cudaMalloc((void**)&dev_hash_idx, sizeof(HashElem)*morton_num));
 	GPUCHECK(cudaMemcpy(dev_hash_grids, &hash_grids[0], point_num * sizeof(HashValue), cudaMemcpyHostToDevice));
 	GPUCHECK(cudaMemcpy(dev_hash_idx, &hash_idx[0], morton_num * sizeof(HashElem), cudaMemcpyHostToDevice));
-	GPUCHECK(cudaMemcpy(dev_points, &points[0], point_num * sizeof(Point2D), cudaMemcpyHostToDevice));
+	
 
 
 	//generate original weighting 
@@ -774,56 +825,143 @@ int main()
 	//extract those calculated with radius search
 	
 
-	viewGPUArray<HashElem>(dev_hash_idx, morton_num, "bc_dev_hash_idx");
+	//viewGPUArray<HashElem>(dev_hash_idx, morton_num, "bc_dev_hash_idx");
 	
 	extractBatch << <numBlocks_batch, threadsPerBlock_batch >> >(dev_hash_grids, dev_hash_idx, morton_num, desiredResults, batchSize, dev_randomized_index_array);
+	GPUCHECK(cudaPeekAtLastError());
+	GPUCHECK(cudaDeviceSynchronize());
 
-	viewGPUArrayMat<HashValue>(desiredResults, batchSize, "batch");
+	viewGPUArray<HashValue>(dev_hash_grids, point_num, "dev_hash_grids");
 	//reset weighting
 	int threadsPerBlock_reset_weighting = 256;
 	int numBlocks_reset_weighting = (point_num + threadsPerBlock_reset_weighting - 1) / threadsPerBlock_reset_weighting;
-	resetWeighting << <threadsPerBlock_reset_weighting, numBlocks_reset_weighting >> >(dev_hash_grids, point_num);
-
+	resetWeighting << <numBlocks_reset_weighting, threadsPerBlock_reset_weighting >> >(dev_hash_grids, point_num);
+	GPUCHECK(cudaPeekAtLastError());
+	GPUCHECK(cudaDeviceSynchronize());
 
 	//update weighting
 	int threadsPerBlock_updateWeighting = 64;
 	int numBlocks_updateWeighting = (batchSize + threadsPerBlock_updateWeighting - 1) / threadsPerBlock_updateWeighting;
 	int offset = 0;//offset of this batch
-	updateWeight << <threadsPerBlock_updateWeighting, numBlocks_updateWeighting >> >(dev_hash_grids, dev_hash_idx, desiredResults, radius, grid_dim, batchSize);
-
+	updateWeight << <numBlocks_updateWeighting, threadsPerBlock_updateWeighting >> >(dev_hash_grids, dev_hash_idx, desiredResults, radius, grid_dim, batchSize);
+	GPUCHECK(cudaPeekAtLastError());
+	GPUCHECK(cudaDeviceSynchronize());
 
 	
 	for (int batch_idx = 1; batch_idx < desiredNum/batchSize; batch_idx++)
 	{
 		int tpb_heapify = 256;
 		int nb_heapify = (point_num + tpb_heapify - 1) / tpb_heapify;
-		dev_MQ_heapify << <tpb_heapify, nb_heapify >> >(dev_hash_grids, dev_hash_idx, morton_num);
-		
+		dev_MQ_heapify << <nb_heapify, tpb_heapify >> >(dev_hash_grids, dev_hash_idx, morton_num);
+		GPUCHECK(cudaPeekAtLastError());
+		GPUCHECK(cudaDeviceSynchronize());	
+
 		int tpb_extract = 64;
 		int nb_extract = (batchSize + tpb_extract - 1) / tpb_extract;
-		extractBatch << <tpb_extract, nb_extract >> >(dev_hash_grids, dev_hash_idx, morton_num, desiredResults+batchSize*batch_idx, batchSize, dev_randomized_index_array);
+		extractBatch << <nb_extract, tpb_extract >> >(dev_hash_grids, dev_hash_idx, morton_num, desiredResults + batchSize*batch_idx, batchSize, dev_randomized_index_array);
+		GPUCHECK(cudaPeekAtLastError());
+		GPUCHECK(cudaDeviceSynchronize());
 
 		int tpb_update = 64;
 		int nb_update = (batchSize + tpb_update - 1) / threadsPerBlock_updateWeighting;
-		updateWeight << <threadsPerBlock_updateWeighting, numBlocks_updateWeighting >> >(dev_hash_grids, dev_hash_idx, desiredResults + batch_idx * batchSize, radius, grid_dim, batchSize);
-
+		updateWeight << <nb_update, tpb_update >> >(dev_hash_grids, dev_hash_idx, desiredResults + batch_idx * batchSize, radius, grid_dim, batchSize);
+		GPUCHECK(cudaPeekAtLastError());
+		GPUCHECK(cudaDeviceSynchronize());
 	}
 
-	viewGPUArray<HashValue>(desiredResults, desiredNum, "batch");
-	viewGPUArrayMat<HashValue>(desiredResults, desiredNum, "batch");
+	//viewGPUArray<HashValue>(desiredResults, desiredNum, "batch");
+	//viewGPUArrayMat<HashValue>(desiredResults, desiredNum, "batch");
 	
 	GPUCHECK(cudaFree(dev_hash_grids));
 	GPUCHECK(cudaFree(dev_hash_idx));
-	GPUCHECK(cudaFree(dev_points));
+	//GPUCHECK(cudaFree(dev_points));
 	GPUCHECK(cudaFree(desiredResults));
 	GPUCHECK(cudaFree(dev_randomized_index_array));
-
-	/*
-	GPUCHECK(cudaFree(MQ_dev));
-	GPUCHECK(cudaFree(MQ_idx_dev));
-*/
 
     return 0;
 }
 
+//
+////time test
+//#ifdef TEST
+//for (int i = 10000; i <= 500000; i += 10000)
+//{
+//	generateRandomPointCloud(points, i);
+//	int start_s = clock();
+//	hashingPoints2D(points, hash_grids, i, grid_dim);
+//	//make hash index (used for searching)
+//
+//	hashIndexing(hash_grids, hash_idx, i);
+//	int stop_s = clock();
+//
+//	cout << i << " " << (stop_s - start_s) / double(CLOCKS_PER_SEC) * 1000.0 << endl;
+//}
+//#endif
+
+
+
+//All efforts to build on device.
+
+//Point2D* dev_points;
+//curandState_t* states;
+//GPUCHECK(cudaMalloc((void**)&dev_points, sizeof(Point2D) * point_num));
+//GPUCHECK(cudaMalloc((void**)&states, sizeof(curandState_t) * point_num));
+//
+//int tpb_generate = 256;
+//int nb_generate = (point_num + tpb_generate - 1) / tpb_generate;
+//generateRandomPoint << <nb_generate, tpb_generate >> >(states, dev_points, time(0), point_num);
+
+////dev generated random too slow, use host.
+////generateRandomPointCloud(points, point_num);
+////GPUCHECK(cudaMemcpy(dev_points, &points[0], sizeof(Point2D) * point_num, cudaMemcpyHostToDevice));
+
+
+//viewGPUArray<Point2D>(dev_points, point_num, "points");
+////GPUCHECK(cudaMemcpy(&points[0], dev_points, sizeof(Point2D) * point_num, cudaMemcpyDeviceToHost));
+
+
+/**************************************************************************************/
+//Step 2. Generate Point Hashing (Morton)
+/**************************************************************************************/
+//HashValue* dev_hash_grids = 0;
+//HashElem* dev_hash_idx = 0;
+
+//GPUCHECK(cudaMalloc((void**)&dev_hash_grids, point_num * sizeof(HashValue)));
+//GPUCHECK(cudaMalloc((void**)&dev_hash_idx, morton_num * sizeof(HashElem)));
+//
+//int tpb_hashing = 256;
+//int nb_hashing = (point_num + tpb_hashing - 1) / tpb_hashing;
+//hashingPoints2Ddev << <nb_hashing, tpb_hashing >> >(dev_points, dev_hash_grids, point_num, grid_dim);
+//GPUCHECK(cudaPeekAtLastError());
+//GPUCHECK(cudaDeviceSynchronize());
+//marker_struct* marker;
+//HashElem* counter;
+//GPUCHECK(cudaMalloc((void**)&marker, sizeof(marker_struct) * point_num));
+//GPUCHECK(cudaMalloc((void**)&counter, sizeof(HashElem) * point_num));
+
+//thrust::device_ptr<HashValue> dev_hash_grids_pointer(dev_hash_grids);
+//thrust::sort(dev_hash_grids_pointer, dev_hash_grids_pointer + point_num, HashCmp());
+//
+//
+//int tpb_marking = 256;
+//int nb_marking = (point_num + tpb_marking - 1) / tpb_marking;
+//generateMarkerArray << <nb_marking, tpb_marking >> >(marker, dev_hash_grids, point_num);
+//GPUCHECK(cudaPeekAtLastError());
+//GPUCHECK(cudaDeviceSynchronize());
+////viewGPUArray<marker_struct>(marker, point_num, "marker");
+
+//
+//generateCounterArray << <nb_marking, tpb_marking >> >(marker, counter, point_num);
+//GPUCHECK(cudaPeekAtLastError());
+//GPUCHECK(cudaDeviceSynchronize());
+//viewGPUArray<HashElem>(counter, point_num, "counter");
+//thrust::device_ptr<marker_struct> marker_pointer(marker);
+//thrust::device_ptr<HashElem> counter_pointer(counter);
+
+//thrust::copy_if(thrust::device,counter_pointer, counter_pointer + point_num, marker_pointer, dev_hash_idx, marker_not_zero());
+//viewGPUArray<HashElem>(dev_hash_idx, morton_num, "dev_hash_idx");
+
+
+
+//hashIndexing(hash_grids, hash_idx, point_num);
 
